@@ -1,0 +1,20 @@
+{
+  "name": "vulnguard-sast",
+  "version": "1.0.0",
+  "description": "Static Application Security Testing (SAST) & Live CVE Dependency Scanner for detecting SQLi, RCE, LFI, XSS, and hardcoded secrets with OWASP Top 10 remediations.",
+  "private": false,
+  "license": "MIT",
+  "scripts": {
+    "start": "npx serve ."
+  },
+  "keywords": [
+    "cybersecurity",
+    "sast",
+    "static-analysis",
+    "owasp-top-10",
+    "cwe",
+    "vulnerability-scanner",
+    "appsec",
+    "devsecops"
+  ]
+}
