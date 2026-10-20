@@ -1,10 +1,20 @@
 /**
- * VulnGuard SAST - Interactive Web Application Controller
+ * VulnGuard SAST v2.0 - Interactive Web Application Controller
+ * Includes:
+ * - Multi-line Source-to-Sink Taint Flow visualization
+ * - Live Public GitHub Repository Multi-File Scanner
+ * - OASIS SARIF v2.1.0, JSON, and Markdown Report Exporters
+ * - OSV.dev Live Dependency CVE Scanner
  */
 
 import { SAST_RULES } from "./rules.js";
 import { CODE_SAMPLES } from "./samples.js";
-import { analyzeSourceCode, scanDependenciesOSV } from "./engine.js";
+import {
+  analyzeSourceCode,
+  scanDependenciesOSV,
+  generateSarifReport,
+  scanGitHubRepository,
+} from "./engine.js";
 
 const SAMPLE_DEPENDENCY_MANIFESTS = {
   pypi: `# Sample Python requirements.txt with known historical CVEs
@@ -33,16 +43,13 @@ let activeCategoryFilter = "ALL";
 document.addEventListener("DOMContentLoaded", () => {
   initNavigation();
   initSastEditor();
+  initGitHubRepoScanner();
   initDependencyScanner();
   renderRulebookTable();
 
-  // Load initial Python vulnerable sample and run scan automatically
   loadCodeSample("python_flask");
 });
 
-/**
- * Top-level tab navigation (SAST Analyzer | Dependency CVE Scanner | Detection Rules)
- */
 function initNavigation() {
   const navButtons = document.querySelectorAll("[data-tab-target]");
   const sections = document.querySelectorAll("[data-tab-section]");
@@ -54,19 +61,15 @@ function initNavigation() {
       btn.classList.add("active-tab");
 
       sections.forEach((sec) => {
-        if (sec.getAttribute("data-tab-section") === target) {
-          sec.classList.remove("hidden");
-        } else {
-          sec.classList.add("hidden");
-        }
+        sec.classList.toggle(
+          "hidden",
+          sec.getAttribute("data-tab-section") !== target
+        );
       });
     });
   });
 }
 
-/**
- * Initialize the SAST Code Editor, sample loader, file upload, and category filters
- */
 function initSastEditor() {
   const editor = document.getElementById("code-editor");
   const gutter = document.getElementById("line-gutter");
@@ -75,37 +78,32 @@ function initSastEditor() {
   const scanBtn = document.getElementById("run-scan-btn");
   const clearBtn = document.getElementById("clear-code-btn");
   const fileInput = document.getElementById("file-upload-input");
+  const exportSarifBtn = document.getElementById("export-sarif-btn");
   const exportJsonBtn = document.getElementById("export-json-btn");
   const exportMdBtn = document.getElementById("export-md-btn");
 
-  // Sync scroll between textarea and line gutter
   editor.addEventListener("scroll", () => {
     gutter.scrollTop = editor.scrollTop;
   });
 
-  // Update line numbers and optionally live-scan on input
   editor.addEventListener("input", () => {
-    updateLineGutter();
+    executeSastScan();
   });
 
-  // Load preset sample
   sampleSelect.addEventListener("change", (e) => {
     if (e.target.value) {
       loadCodeSample(e.target.value);
     }
   });
 
-  // Language change re-runs analysis
   langSelect.addEventListener("change", () => {
     executeSastScan();
   });
 
-  // Scan button click
   scanBtn.addEventListener("click", () => {
     executeSastScan();
   });
 
-  // Clear editor
   clearBtn.addEventListener("click", () => {
     editor.value = "";
     sampleSelect.value = "";
@@ -114,7 +112,6 @@ function initSastEditor() {
     executeSastScan();
   });
 
-  // File upload handler
   fileInput.addEventListener("change", (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -129,7 +126,6 @@ function initSastEditor() {
     reader.readAsText(file);
   });
 
-  // Category filter pills
   document.querySelectorAll("[data-category-filter]").forEach((pill) => {
     pill.addEventListener("click", () => {
       activeCategoryFilter = pill.getAttribute("data-category-filter");
@@ -143,14 +139,100 @@ function initSastEditor() {
     });
   });
 
-  // Export buttons
+  exportSarifBtn.addEventListener("click", exportReportSARIF);
   exportJsonBtn.addEventListener("click", exportReportJSON);
   exportMdBtn.addEventListener("click", exportReportMarkdown);
 }
 
 /**
- * Loads a built-in code sample into the editor and triggers analysis
+ * Live Public GitHub Repository Scanner
  */
+function initGitHubRepoScanner() {
+  const repoInput = document.getElementById("github-repo-input");
+  const scanRepoBtn = document.getElementById("scan-github-repo-btn");
+  const filesBar = document.getElementById("github-repo-files-bar");
+
+  if (!scanRepoBtn) return;
+
+  scanRepoBtn.addEventListener("click", async () => {
+    const repoQuery = repoInput.value.trim();
+    if (!repoQuery) return;
+
+    scanRepoBtn.disabled = true;
+    scanRepoBtn.textContent = "Fetching Repo Files...";
+    filesBar.classList.remove("hidden");
+    filesBar.innerHTML = `<span class="text-xs text-slate-400">Scanning public GitHub repository <strong>${escapeHtml(repoQuery)}</strong> via GitHub API...</span>`;
+
+    try {
+      const repoScan = await scanGitHubRepository(repoQuery);
+      const totalRepoFindings = repoScan.fileReports.reduce(
+        (sum, f) => sum + f.report.findings.length,
+        0
+      );
+
+      filesBar.innerHTML = `
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span class="font-semibold text-slate-200">
+            Scanned <strong>${repoScan.scannedFilesCount}</strong> files in <code class="text-sky-400">${escapeHtml(repoScan.owner)}/${escapeHtml(repoScan.repo)}</code> (${escapeHtml(repoScan.branch)}) — Click any file to inspect:
+          </span>
+          <span class="rounded bg-slate-800 px-2.5 py-0.5 font-mono text-xs font-bold ${
+            totalRepoFindings > 0 ? "text-amber-400" : "text-emerald-400"
+          }">
+            Total Repo Findings: ${totalRepoFindings}
+          </span>
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          ${repoScan.fileReports
+            .map(
+              (f, idx) => `
+            <button type="button" data-repo-file-idx="${idx}"
+                    class="rounded-lg border ${
+                      f.report.findings.length > 0
+                        ? "border-red-500/40 bg-red-500/10 text-red-300"
+                        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    } px-2.5 py-1 font-mono text-xs hover:opacity-85 transition">
+              ${escapeHtml(f.path)} (${f.report.findings.length})
+            </button>
+          `
+            )
+            .join("")}
+        </div>
+      `;
+
+      filesBar.querySelectorAll("[data-repo-file-idx]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idx = parseInt(btn.getAttribute("data-repo-file-idx"), 10);
+          const selected = repoScan.fileReports[idx];
+          if (selected) {
+            document.getElementById("code-editor").value = selected.code;
+            document.getElementById("current-filename").textContent = selected.path;
+            document.getElementById("language-select").value = "auto";
+            document.getElementById("sample-select").value = "";
+            executeSastScan();
+          }
+        });
+      });
+
+      // Automatically load the first file with findings (or first file)
+      const firstInteresting =
+        repoScan.fileReports.find((f) => f.report.findings.length > 0) ||
+        repoScan.fileReports[0];
+      if (firstInteresting) {
+        document.getElementById("code-editor").value = firstInteresting.code;
+        document.getElementById("current-filename").textContent = firstInteresting.path;
+        document.getElementById("language-select").value = "auto";
+        document.getElementById("sample-select").value = "";
+        executeSastScan();
+      }
+    } catch (err) {
+      filesBar.innerHTML = `<span class="text-xs text-red-400"><strong>GitHub Scan Error:</strong> ${escapeHtml(err.message)}</span>`;
+    } finally {
+      scanRepoBtn.disabled = false;
+      scanRepoBtn.textContent = "🔍 Scan GitHub Repo";
+    }
+  });
+}
+
 function loadCodeSample(sampleKey) {
   const sample = CODE_SAMPLES[sampleKey];
   if (!sample) return;
@@ -166,9 +248,6 @@ function loadCodeSample(sampleKey) {
   executeSastScan();
 }
 
-/**
- * Updates the line-number gutter and marks lines with detected vulnerabilities
- */
 function updateLineGutter(findings = []) {
   const editor = document.getElementById("code-editor");
   const gutter = document.getElementById("line-gutter");
@@ -203,23 +282,17 @@ function updateLineGutter(findings = []) {
   gutter.innerHTML = html.join("");
 }
 
-/**
- * Runs the Static Application Security Testing engine and updates the UI
- */
 function executeSastScan() {
   const editor = document.getElementById("code-editor");
   const langSelect = document.getElementById("language-select");
-  const code = editor.value;
+  const filename = document.getElementById("current-filename").textContent || "snippet";
 
-  currentReport = analyzeSourceCode(code, langSelect.value);
+  currentReport = analyzeSourceCode(editor.value, langSelect.value, filename);
   updateLineGutter(currentReport.findings);
   renderScoreDashboard(currentReport);
   renderFindingsList(currentReport.findings);
 }
 
-/**
- * Updates the top metrics cards (Security Score, Grade, Severity & Category breakdown)
- */
 function renderScoreDashboard(report) {
   const scoreEl = document.getElementById("security-score-val");
   const gradeEl = document.getElementById("security-grade-badge");
@@ -228,7 +301,6 @@ function renderScoreDashboard(report) {
   scoreEl.textContent = `${report.score}/100`;
   gradeEl.textContent = report.grade;
 
-  // Style grade badge
   gradeEl.className =
     "px-3 py-1 rounded-lg text-lg font-extrabold tracking-tight border ";
   if (report.grade.startsWith("A")) {
@@ -240,18 +312,14 @@ function renderScoreDashboard(report) {
   }
 
   const langLabel =
-    report.language === "all"
-      ? "Multi-Language"
-      : report.language.toUpperCase();
-  metaEl.textContent = `${langLabel} • ${report.totalLines} lines • Scanned in ${report.durationMs}ms`;
+    report.language === "all" ? "Multi-Language" : report.language.toUpperCase();
+  metaEl.textContent = `${langLabel} • ${report.totalLines} lines • ${report.taintedSourcesCount || 0} taint sources • ${report.durationMs}ms`;
 
-  // Severity counters
   document.getElementById("count-critical").textContent = report.counts.CRITICAL;
   document.getElementById("count-high").textContent = report.counts.HIGH;
-  document.getElementById("count-medium").textContent = report.counts.MEDIUM;
+  document.getElementById("count-medium").textContent = `${report.counts.MEDIUM} Med`;
   document.getElementById("count-total").textContent = report.findings.length;
 
-  // Category filter pill counts
   document.getElementById("cat-count-all").textContent = report.findings.length;
   document.getElementById("cat-count-sqli").textContent = report.categories.SQLi;
   document.getElementById("cat-count-rce").textContent = report.categories.RCE;
@@ -260,9 +328,6 @@ function renderScoreDashboard(report) {
   document.getElementById("cat-count-secrets").textContent = report.categories.SECRETS;
 }
 
-/**
- * Escapes HTML special characters for safe rendering in the UI
- */
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
@@ -272,9 +337,6 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
-/**
- * Renders the list of SAST vulnerability findings with remediation diffs
- */
 function renderFindingsList(findings) {
   const container = document.getElementById("findings-container");
   const filtered =
@@ -290,7 +352,7 @@ function renderFindingsList(findings) {
         </div>
         <h3 class="text-lg font-semibold text-emerald-300">No Security Vulnerabilities Detected</h3>
         <p class="mt-1 text-sm text-slate-400">
-          No ${activeCategoryFilter === "ALL" ? "" : activeCategoryFilter + " "}insecure patterns matched across the current code snippet.
+          No ${activeCategoryFilter === "ALL" ? "" : activeCategoryFilter + " "}insecure patterns or taint flows matched across the current code snippet.
         </p>
       </div>
     `;
@@ -306,15 +368,47 @@ function renderFindingsList(findings) {
           ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
           : "bg-yellow-500/20 text-yellow-300 border-yellow-500/40";
 
-      const catBadge = {
-        SQLi: "bg-purple-500/20 text-purple-300 border-purple-500/40",
-        RCE: "bg-rose-500/20 text-rose-300 border-rose-500/40",
-        LFI: "bg-cyan-500/20 text-cyan-300 border-cyan-500/40",
-        XSS: "bg-amber-500/20 text-amber-300 border-amber-500/40",
-        SECRETS: "bg-indigo-500/20 text-indigo-300 border-indigo-500/40",
-      }[f.category] || "bg-slate-700 text-slate-300";
+      const catBadge =
+        {
+          SQLi: "bg-purple-500/20 text-purple-300 border-purple-500/40",
+          RCE: "bg-rose-500/20 text-rose-300 border-rose-500/40",
+          LFI: "bg-cyan-500/20 text-cyan-300 border-cyan-500/40",
+          XSS: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+          SECRETS: "bg-indigo-500/20 text-indigo-300 border-indigo-500/40",
+        }[f.category] || "bg-slate-700 text-slate-300";
 
       const cweNum = f.cwe.replace("CWE-", "");
+
+      const taintTraceHtml =
+        f.taintTrace && f.taintTrace.length > 0
+          ? `
+        <div class="mt-3 rounded-lg border border-amber-500/30 bg-amber-950/15 p-3">
+          <div class="mb-1.5 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-300">
+            <span>🔗 Source-to-Sink Data Flow Taint Trace (${f.taintTrace.length} hops)</span>
+            <span>Taint Analysis</span>
+          </div>
+          <div class="space-y-1.5 font-mono text-xs">
+            ${f.taintTrace
+              .map(
+                (hop) => `
+              <div class="flex flex-wrap items-center gap-2 rounded bg-slate-950/80 px-2.5 py-1">
+                <span class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                  hop.step === "Source"
+                    ? "bg-sky-500/20 text-sky-300"
+                    : hop.step === "Propagation"
+                    ? "bg-amber-500/20 text-amber-300"
+                    : "bg-red-500/20 text-red-300"
+                }">${escapeHtml(hop.step)} (L${hop.line})</span>
+                <span class="text-slate-400">${escapeHtml(hop.detail)}:</span>
+                <code class="text-slate-200">${escapeHtml(hop.code)}</code>
+              </div>
+            `
+              )
+              .join("")}
+          </div>
+        </div>
+      `
+          : "";
 
       return `
       <article class="rounded-xl border border-slate-800 bg-slate-900/90 p-5 shadow-lg transition hover:border-slate-700">
@@ -352,16 +446,16 @@ function renderFindingsList(findings) {
           ${escapeHtml(f.description)}
         </p>
 
-        <!-- Matched Source Line -->
         <div class="mt-3 rounded-lg border border-red-500/30 bg-slate-950 p-3 font-mono text-xs">
           <div class="mb-1 flex items-center justify-between text-[11px] text-red-400">
-            <span>DETECTED VULNERABLE LINE (LINE ${f.line})</span>
-            <span>Pattern Match</span>
+            <span>DETECTED VULNERABLE SINK (LINE ${f.line})</span>
+            <span>${f.taintTrace ? "Taint + Pattern Match" : "Pattern Match"}</span>
           </div>
           <pre class="overflow-x-auto text-red-300"><code>${escapeHtml(f.codeSnippet)}</code></pre>
         </div>
 
-        <!-- Remediation Guidance & Side-by-Side Secure Fix -->
+        ${taintTraceHtml}
+
         <div class="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-950/15 p-3.5">
           <div class="flex items-center justify-between">
             <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">
@@ -392,7 +486,6 @@ function renderFindingsList(findings) {
     })
     .join("");
 
-  // Attach jump-to-line listeners
   container.querySelectorAll("[data-jump-line]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const lineNum = parseInt(btn.getAttribute("data-jump-line"), 10);
@@ -400,12 +493,11 @@ function renderFindingsList(findings) {
     });
   });
 
-  // Attach copy-fix listeners
   container.querySelectorAll("[data-copy-fix]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const idx = btn.getAttribute("data-copy-fix");
       const codeEl = document.getElementById(`secure-fix-code-${idx}`);
-      if (codeEl) {
+      if (codeEl && navigator.clipboard) {
         navigator.clipboard.writeText(codeEl.textContent);
         const original = btn.textContent;
         btn.textContent = "Copied ✓";
@@ -417,9 +509,6 @@ function renderFindingsList(findings) {
   });
 }
 
-/**
- * Scrolls the code editor to a specific line number and highlights it
- */
 function jumpToEditorLine(lineNumber) {
   const editor = document.getElementById("code-editor");
   const lines = editor.value.split(/\r?\n/);
@@ -431,13 +520,23 @@ function jumpToEditorLine(lineNumber) {
 
   editor.focus();
   editor.setSelectionRange(charOffset, charOffset + lineLength);
-  const lineHeight = 24;
-  editor.scrollTop = Math.max(0, (lineNumber - 4) * lineHeight);
+  editor.scrollTop = Math.max(0, (lineNumber - 4) * 24);
 }
 
-/**
- * Exports the current security audit report as JSON
- */
+function exportReportSARIF() {
+  if (!currentReport) return;
+  const sarif = generateSarifReport(currentReport);
+  const blob = new Blob([JSON.stringify(sarif, null, 2)], {
+    type: "application/sarif+json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `vulnguard-sast-${Date.now()}.sarif`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function exportReportJSON() {
   if (!currentReport) return;
   const blob = new Blob([JSON.stringify(currentReport, null, 2)], {
@@ -451,14 +550,12 @@ function exportReportJSON() {
   URL.revokeObjectURL(url);
 }
 
-/**
- * Exports the current security audit report as Markdown
- */
 function exportReportMarkdown() {
   if (!currentReport) return;
   const r = currentReport;
   const lines = [
-    `# VulnGuard SAST Security Audit Report`,
+    `# VulnGuard SAST v2.0 Security Audit Report`,
+    `- **File:** \`${r.filename}\``,
     `- **Timestamp:** ${r.timestamp}`,
     `- **Language:** ${r.language.toUpperCase()}`,
     `- **Security Score:** ${r.score}/100 (Grade: **${r.grade}**)`,
@@ -470,8 +567,15 @@ function exportReportMarkdown() {
 
   r.findings.forEach((f, i) => {
     lines.push(`### ${i + 1}. [${f.severity}] ${f.title} (Line ${f.line})`);
-    lines.push(`- **Rule ID:** \`${f.ruleId}\` | **Category:** \`${f.category}\` | **CWE:** ${f.cwe} | **OWASP:** ${f.owasp} | **CVSS:** ${f.cvss}`);
+    lines.push(
+      `- **Rule ID:** \`${f.ruleId}\` | **Category:** \`${f.category}\` | **CWE:** ${f.cwe} | **OWASP:** ${f.owasp} | **CVSS:** ${f.cvss}`
+    );
     lines.push(`- **Vulnerable Snippet:** \`${f.codeSnippet}\``);
+    if (f.taintTrace) {
+      lines.push(
+        `- **Taint Flow:** ${f.taintTrace.map((t) => `${t.step} (L${t.line})`).join(" -> ")}`
+      );
+    }
     lines.push(`- **Risk Explanation:** ${f.description}`);
     lines.push(`- **Remediation:** ${f.remediation}`);
     lines.push(`- **Secure Code Example:**`);
@@ -490,9 +594,6 @@ function exportReportMarkdown() {
   URL.revokeObjectURL(url);
 }
 
-/**
- * Initializes the Live Dependency CVE Scanner (OSV.dev API)
- */
 function initDependencyScanner() {
   const input = document.getElementById("dep-manifest-input");
   const loadPypiBtn = document.getElementById("load-pypi-sample");
@@ -542,7 +643,9 @@ function initDependencyScanner() {
             .map(
               (pkg) => `
             <div class="rounded-xl border ${
-              pkg.vulnCount > 0 ? "border-red-500/30 bg-slate-900" : "border-slate-800 bg-slate-900/60"
+              pkg.vulnCount > 0
+                ? "border-red-500/30 bg-slate-900"
+                : "border-slate-800 bg-slate-900/60"
             } p-4">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">
@@ -550,7 +653,9 @@ function initDependencyScanner() {
                   <span class="font-mono text-sm font-bold text-slate-100">${escapeHtml(pkg.name)}@${escapeHtml(pkg.version)}</span>
                 </div>
                 <span class="rounded px-2.5 py-0.5 text-xs font-semibold ${
-                  pkg.vulnCount > 0 ? "bg-red-500/20 text-red-400" : "bg-emerald-500/20 text-emerald-400"
+                  pkg.vulnCount > 0
+                    ? "bg-red-500/20 text-red-400"
+                    : "bg-emerald-500/20 text-emerald-400"
                 }">
                   ${pkg.vulnCount > 0 ? `${pkg.vulnCount} Advisories` : "Clean ✓"}
                 </span>
@@ -595,9 +700,6 @@ function initDependencyScanner() {
   });
 }
 
-/**
- * Renders the full SAST Detection Rules & CWE reference table
- */
 function renderRulebookTable() {
   const tbody = document.getElementById("rulebook-tbody");
   if (!tbody) return;
