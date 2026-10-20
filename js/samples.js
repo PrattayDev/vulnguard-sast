@@ -29,6 +29,9 @@ def get_user():
     cursor = conn.cursor()
     # Vulnerable to SQL Injection (CWE-89)
     cursor.execute(f"SELECT id, username, role FROM users WHERE username = '{username}'")
+    # Multi-line Taint Flow: Source -> Propagation -> Sink
+    sql_query = "SELECT * FROM audit_logs WHERE actor = '" + username + "'"
+    cursor.execute(sql_query)
     return {"user": cursor.fetchone()}
 
 @app.route("/api/diagnostics")
