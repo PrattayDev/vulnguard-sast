@@ -5,6 +5,9 @@
 ![CWE Mapped](https://img.shields.io/badge/MITRE-CWE%20Mapped-f59e0b?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-6366f1?style=for-the-badge)
 
+🌐 **Live Production Demo (Vercel):** [**https://vulnguard-sast.vercel.app**](https://vulnguard-sast.vercel.app)  
+📦 **GitHub Pages Mirror:** [**https://prattaydev.github.io/vulnguard-sast/**](https://prattaydev.github.io/vulnguard-sast/)
+
 **VulnGuard SAST** is a defensive **Static Application Security Testing (SAST)** and **Software Composition Analysis (SCA)** platform built for secure code review, DevSecOps pipelines, and cybersecurity education.
 
 It inspects source code across **Python**, **JavaScript / Node.js**, and **PHP** to identify high-risk vulnerability patterns—including **SQL Injection (SQLi)**, **Remote Code Execution (RCE)**, **Local File Inclusion (LFI) / Path Traversal**, **Cross-Site Scripting (XSS)**, and **Hardcoded Secrets / Weak Cryptography**—and provides side-by-side **Secure Code Remediations** mapped to **MITRE CWE** and **OWASP Top 10 (2021)**.
